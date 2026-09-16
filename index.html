@@ -41,7 +41,6 @@
       white-space: pre-wrap;
       word-break: break-all;
     }
-    .status { font-size: 12px; color: #f2b86a; margin-top: 8px; }
     button {
       background: #5288c1;
       color: #fff;
@@ -55,6 +54,79 @@
       cursor: pointer;
     }
     button:active { background: #3f6fa3; }
+
+    /* Verification banner */
+    #verify-banner {
+      margin-top: 16px;
+      border-radius: 12px;
+      padding: 16px;
+      font-size: 14px;
+      line-height: 1.6;
+      display: none;
+      border: 2px solid transparent;
+    }
+    #verify-banner.new {
+      display: block;
+      background: #1e3a2b;
+      border-color: #2ecc71;
+      color: #a8e6b8;
+    }
+    #verify-banner.returning {
+      display: block;
+      background: #1e2f3a;
+      border-color: #5299d3;
+      color: #a8d0f0;
+    }
+    #verify-banner.multi {
+      display: block;
+      background: #3a1e1e;
+      border-color: #e74c3c;
+      color: #f0a8a8;
+    }
+    #verify-banner .icon { font-size: 22px; margin-right: 8px; }
+    #verify-banner .title { font-weight: 700; font-size: 16px; display: block; margin-bottom: 6px; }
+    #verify-banner .detail { font-size: 13px; opacity: 0.9; }
+    #verify-banner .acct {
+      display: inline-block;
+      background: rgba(0,0,0,0.35);
+      padding: 2px 8px;
+      border-radius: 6px;
+      font-family: monospace;
+      font-size: 12px;
+      margin: 2px 4px 2px 0;
+    }
+
+    /* Block overlay */
+    #block-overlay {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.85);
+      z-index: 999;
+      justify-content: center;
+      align-items: center;
+      padding: 24px;
+    }
+    #block-overlay.show { display: flex; }
+    #block-overlay .box {
+      background: #2a1515;
+      border: 2px solid #e74c3c;
+      border-radius: 16px;
+      padding: 28px;
+      max-width: 400px;
+      text-align: center;
+    }
+    #block-overlay h2 { color: #ff6b6b; font-size: 20px; margin-bottom: 12px; }
+    #block-overlay p { font-size: 14px; color: #f0c0c0; margin-bottom: 8px; line-height: 1.5; }
+    #block-overlay .acct-badge {
+      display: inline-block;
+      background: #3a1e1e;
+      padding: 6px 12px;
+      border-radius: 8px;
+      font-family: monospace;
+      margin: 6px 4px;
+      color: #ffb0b0;
+    }
   </style>
 </head>
 <body>
@@ -79,8 +151,36 @@
 
   <button id="copy-btn">Copy Combined JSON</button>
 
+  <!-- Verification banner -->
+  <div id="verify-banner"></div>
+
+  <!-- Block overlay (shown when multi-account detected and blocking enabled) -->
+  <div id="block-overlay">
+    <div class="box">
+      <h2>🚨 Access Denied</h2>
+      <p>Multiple accounts detected on this device.</p>
+      <p>This device is already linked to:</p>
+      <div id="blocked-account-info"></div>
+      <p style="margin-top:16px;font-size:12px;opacity:0.7;">
+        Your current account has been flagged.
+      </p>
+    </div>
+  </div>
+
   <script>
-    // ---------- Utility: simple hash ----------
+    // ============================================================
+    // CONFIG
+    // ============================================================
+    const CONFIG = {
+      STORAGE_KEY: "device_account_registry",
+      BLOCK_MULTI_ACCOUNTS: false,   // set to true to disable the page on multi-acc
+      SHOW_USER_ID: true,            // show user ID in messages
+      SHOW_FIRST_NAME: true          // show first name in messages
+    };
+
+    // ============================================================
+    // UTILITIES
+    // ============================================================
     async function sha256(str) {
       const buf = new TextEncoder().encode(str);
       const hash = await crypto.subtle.digest("SHA-256", buf);
@@ -89,7 +189,9 @@
         .join("");
     }
 
-    // ---------- Canvas fingerprint ----------
+    // ============================================================
+    // FINGERPRINT COLLECTORS
+    // ============================================================
     function getCanvasHash() {
       try {
         const canvas = document.createElement("canvas");
@@ -110,7 +212,6 @@
       }
     }
 
-    // ---------- WebGL fingerprint ----------
     function getWebGLInfo() {
       try {
         const canvas = document.createElement("canvas");
@@ -126,7 +227,6 @@
       }
     }
 
-    // ---------- Audio fingerprint ----------
     async function getAudioHash() {
       try {
         const AudioCtx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
@@ -147,7 +247,6 @@
       }
     }
 
-    // ---------- Fonts detection ----------
     function detectFonts(fontList) {
       const baseFonts = ["monospace", "sans-serif", "serif"];
       const testString = "mmmmmmmmmmlli";
@@ -180,7 +279,9 @@
       return detected;
     }
 
-    // ---------- Device fingerprint ----------
+    // ============================================================
+    // DEVICE INFO COLLECTION
+    // ============================================================
     async function collectDeviceInfo() {
       const webgl = getWebGLInfo();
       const canvasData = getCanvasHash();
@@ -230,7 +331,6 @@
         }
       };
 
-      // Create a combined fingerprint hash
       const fpString = JSON.stringify({
         hw: info.hardware,
         screen: info.screen,
@@ -242,12 +342,13 @@
       return info;
     }
 
-    // ---------- Telegram data ----------
+    // ============================================================
+    // TELEGRAM DATA COLLECTION
+    // ============================================================
     function collectTelegramData() {
       const tg = window.Telegram?.WebApp;
       if (!tg) return { error: "Not running inside Telegram" };
 
-      // Parse the raw initData string into an object
       const parsed = {};
       if (tg.initData) {
         const params = new URLSearchParams(tg.initData);
@@ -275,7 +376,170 @@
       };
     }
 
-    // ---------- Main ----------
+    // ============================================================
+    // ACCOUNT REGISTRY (localStorage)
+    // ============================================================
+    function loadRegistry() {
+      try {
+        return JSON.parse(localStorage.getItem(CONFIG.STORAGE_KEY) || "{}");
+      } catch {
+        return {};
+      }
+    }
+
+    function saveRegistry(reg) {
+      localStorage.setItem(CONFIG.STORAGE_KEY, JSON.stringify(reg));
+    }
+
+    /**
+     * Check the fingerprint against the registry.
+     * Returns:
+     *   { status: "new",          ... }
+     *   { status: "returning",    ... }
+     *   { status: "multi",        ... }
+     */
+    function checkAccount(fingerprintHash, user) {
+      const reg = loadRegistry();
+      const now = new Date().toISOString();
+      const entry = reg[fingerprintHash];
+
+      // ---- Case 1: NEW DEVICE ----
+      if (!entry) {
+        reg[fingerprintHash] = {
+          first_seen: now,
+          last_seen: now,
+          accounts: [
+            {
+              user_id: user.id,
+              username: user.username || null,
+              first_name: user.first_name || null,
+              first_seen: now
+            }
+          ]
+        };
+        saveRegistry(reg);
+        return { status: "new" };
+      }
+
+      // ---- Device exists — update last_seen ----
+      entry.last_seen = now;
+
+      // ---- Find if THIS account is already linked ----
+      const existing = entry.accounts.find(a => a.user_id === user.id);
+
+      // ---- Case 2: SAME ACCOUNT RETURNING ----
+      if (existing) {
+        existing.last_seen = now;
+        saveRegistry(reg);
+        return {
+          status: "returning",
+          account: existing
+        };
+      }
+
+      // ---- Case 3: DIFFERENT ACCOUNT on same device ----
+      const original = entry.accounts[0];   // first account ever seen
+
+      // Add the new account to history (optional — remove if you want strict blocking)
+      entry.accounts.push({
+        user_id: user.id,
+        username: user.username || null,
+        first_name: user.first_name || null,
+        first_seen: now
+      });
+      saveRegistry(reg);
+
+      return {
+        status: "multi",
+        original,                 // first account on this device
+        current: {
+          user_id: user.id,
+          username: user.username || null,
+          first_name: user.first_name || null
+        },
+        allAccounts: entry.accounts
+      };
+    }
+
+    // ============================================================
+    // UI RENDERERS
+    // ============================================================
+    function renderBanner(result) {
+      const el = document.getElementById("verify-banner");
+      el.className = "";
+      el.innerHTML = "";
+
+      if (result.status === "new") {
+        el.classList.add("new");
+        el.innerHTML = `
+          <span class="title"><span class="icon">🆕</span>New account detected</span>
+          <span class="detail">This device has been registered. Welcome!</span>
+        `;
+      }
+
+      else if (result.status === "returning") {
+        const a = result.account;
+        el.classList.add("returning");
+        el.innerHTML = `
+          <span class="title"><span class="icon">✅</span>Welcome back @${a.username || "user"}</span>
+          <span class="detail">Same device, same account.</span>
+        `;
+      }
+
+      else if (result.status === "multi") {
+        const o = result.original;
+        const c = result.current;
+        el.classList.add("multi");
+
+        let html = `
+          <span class="title"><span class="icon">🚨</span>MULTIPLE ACCOUNTS DETECTED</span>
+          <span class="detail">
+            This device is already linked to:<br/>
+            <span class="acct">👤 @${o.username || "unknown"}</span>
+        `;
+        if (CONFIG.SHOW_USER_ID) {
+          html += `<span class="acct">🆔 ${o.user_id}</span>`;
+        }
+        if (CONFIG.SHOW_FIRST_NAME && o.first_name) {
+          html += `<span class="acct">📛 ${o.first_name}</span>`;
+        }
+        html += `
+            <br/><br/>
+            Current account: <span class="acct">@${c.username || "unknown"}</span>
+            ${CONFIG.SHOW_USER_ID ? `<span class="acct">🆔 ${c.user_id}</span>` : ""}
+            <br/><br/>
+            ⚠️ Access has been flagged.
+          </span>
+        `;
+        el.innerHTML = html;
+
+        if (CONFIG.BLOCK_MULTI_ACCOUNTS) {
+          showBlockOverlay(o, c);
+        }
+      }
+    }
+
+    function showBlockOverlay(original, current) {
+      const overlay = document.getElementById("block-overlay");
+      const info = document.getElementById("blocked-account-info");
+
+      let html = `<div class="acct-badge">👤 @${original.username || "unknown"}</div>`;
+      if (CONFIG.SHOW_USER_ID) {
+        html += `<div class="acct-badge">🆔 ${original.user_id}</div>`;
+      }
+      if (CONFIG.SHOW_FIRST_NAME && original.first_name) {
+        html += `<div class="acct-badge">📛 ${original.first_name}</div>`;
+      }
+      info.innerHTML = html;
+
+      overlay.classList.add("show");
+      // Optionally close the Mini App
+      // window.Telegram?.WebApp?.close();
+    }
+
+    // ============================================================
+    // MAIN
+    // ============================================================
     async function main() {
       const tg = window.Telegram?.WebApp;
       if (tg) {
@@ -292,6 +556,7 @@
         device: deviceData
       };
 
+      // Render JSON blocks
       document.getElementById("tg-output").textContent =
         JSON.stringify(tgData, null, 2);
       document.getElementById("device-output").textContent =
@@ -305,6 +570,22 @@
           .then(() => alert("Copied!"))
           .catch(() => alert("Copy failed"));
       });
+
+      // ---- Account verification ----
+      const user = tgData?.parsed_initData?.user;
+      const fpHash = deviceData.derived_fingerprint_hash;
+
+      if (user && user.id && fpHash) {
+        const result = checkAccount(fpHash, user);
+        renderBanner(result);
+      } else {
+        const el = document.getElementById("verify-banner");
+        el.className = "multi";
+        el.innerHTML = `
+          <span class="title">⚠️ Unable to verify account</span>
+          <span class="detail">Missing Telegram user data or device fingerprint.</span>
+        `;
+      }
     }
 
     main();
