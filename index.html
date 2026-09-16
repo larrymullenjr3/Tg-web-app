@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Telegram Mini App — Device Info</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #17212b;
+      color: #e9e9e9;
+      padding: 16px;
+      min-height: 100vh;
+    }
+    h1 { font-size: 18px; margin-bottom: 4px; color: #6ab2f2; }
+    p.sub { font-size: 12px; color: #7d8b99; margin-bottom: 16px; }
+    .card {
+      background: #1e2a36;
+      border-radius: 12px;
+      padding: 14px;
+      margin-bottom: 12px;
+      border: 1px solid #2b3a48;
+    }
+    .card h2 {
+      font-size: 13px;
+      color: #6ab2f2;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    pre {
+      background: #0e1621;
+      padding: 12px;
+      border-radius: 8px;
+      overflow-x: auto;
+      font-size: 11px;
+      line-height: 1.5;
+      color: #a8d8a8;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .status { font-size: 12px; color: #f2b86a; margin-top: 8px; }
+    button {
+      background: #5288c1;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 16px;
+      font-size: 14px;
+      font-weight: 600;
+      width: 100%;
+      margin-top: 12px;
+      cursor: pointer;
+    }
+    button:active { background: #3f6fa3; }
+  </style>
+</head>
+<body>
+
+  <h1>Device & Telegram Info</h1>
+  <p class="sub">Collected inside Telegram Mini App</p>
+
+  <div class="card">
+    <h2>Telegram initData</h2>
+    <pre id="tg-output">Loading...</pre>
+  </div>
+
+  <div class="card">
+    <h2>Device Fingerprint</h2>
+    <pre id="device-output">Loading...</pre>
+  </div>
+
+  <div class="card">
+    <h2>Combined JSON</h2>
+    <pre id="combined-output">Loading...</pre>
+  </div>
+
+  <button id="copy-btn">Copy Combined JSON</button>
+
+  <script>
+    // ---------- Utility: simple hash ----------
+    async function sha256(str) {
+      const buf = new TextEncoder().encode(str);
+      const hash = await crypto.subtle.digest("SHA-256", buf);
+      return [...new Uint8Array(hash)]
+        .map(b => b.toString(16).padStart(2, "0"))
+        .join("");
+    }
+
+    // ---------- Canvas fingerprint ----------
+    function getCanvasHash() {
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = 200;
+        canvas.height = 50;
+        const ctx = canvas.getContext("2d");
+        ctx.textBaseline = "top";
+        ctx.font = "14px 'Arial'";
+        ctx.fillStyle = "#f60";
+        ctx.fillRect(0, 0, 100, 20);
+        ctx.fillStyle = "#069";
+        ctx.fillText("Telegram MiniApp 🚀", 2, 15);
+        ctx.fillStyle = "rgba(102,204,0,0.7)";
+        ctx.fillText("Telegram MiniApp 🚀", 4, 17);
+        return canvas.toDataURL();
+      } catch (e) {
+        return "canvas-error";
+      }
+    }
+
+    // ---------- WebGL fingerprint ----------
+    function getWebGLInfo() {
+      try {
+        const canvas = document.createElement("canvas");
+        const gl = canvas.getContext("webgl") || canvas.getContext("experimental-webgl");
+        if (!gl) return { vendor: null, renderer: null };
+        const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+        return {
+          vendor: dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR),
+          renderer: dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)
+        };
+      } catch (e) {
+        return { vendor: null, renderer: null };
+      }
+    }
+
+    // ---------- Audio fingerprint ----------
+    async function getAudioHash() {
+      try {
+        const AudioCtx = window.OfflineAudioContext || window.webkitOfflineAudioContext;
+        if (!AudioCtx) return null;
+        const ctx = new AudioCtx(1, 44100, 44100);
+        const osc = ctx.createOscillator();
+        osc.type = "triangle";
+        osc.frequency.value = 10000;
+        const comp = ctx.createDynamicsCompressor();
+        osc.connect(comp);
+        comp.connect(ctx.destination);
+        osc.start(0);
+        const buffer = await ctx.startRendering();
+        const data = buffer.getChannelData(0).slice(4500, 5000);
+        return await sha256(data.join(","));
+      } catch (e) {
+        return null;
+      }
+    }
+
+    // ---------- Fonts detection ----------
+    function detectFonts(fontList) {
+      const baseFonts = ["monospace", "sans-serif", "serif"];
+      const testString = "mmmmmmmmmmlli";
+      const testSize = "72px";
+      const span = document.createElement("span");
+      span.style.position = "absolute";
+      span.style.left = "-9999px";
+      span.style.fontSize = testSize;
+      span.textContent = testString;
+      document.body.appendChild(span);
+
+      const baseSizes = {};
+      baseFonts.forEach(base => {
+        span.style.fontFamily = base;
+        baseSizes[base] = span.offsetWidth + "," + span.offsetHeight;
+      });
+
+      const detected = [];
+      fontList.forEach(font => {
+        let found = false;
+        baseFonts.forEach(base => {
+          span.style.fontFamily = `'${font}',${base}`;
+          const size = span.offsetWidth + "," + span.offsetHeight;
+          if (size !== baseSizes[base]) found = true;
+        });
+        if (found) detected.push(font);
+      });
+
+      document.body.removeChild(span);
+      return detected;
+    }
+
+    // ---------- Device fingerprint ----------
+    async function collectDeviceInfo() {
+      const webgl = getWebGLInfo();
+      const canvasData = getCanvasHash();
+      const audioHash = await getAudioHash();
+
+      const info = {
+        hardware: {
+          hardwareConcurrency: navigator.hardwareConcurrency || null,
+          deviceMemory: navigator.deviceMemory || null,
+          platform: navigator.platform || null,
+          maxTouchPoints: navigator.maxTouchPoints || 0
+        },
+        screen: {
+          width: screen.width,
+          height: screen.height,
+          availWidth: screen.availWidth,
+          availHeight: screen.availHeight,
+          colorDepth: screen.colorDepth,
+          pixelDepth: screen.pixelDepth,
+          devicePixelRatio: window.devicePixelRatio || 1,
+          orientation: screen.orientation ? screen.orientation.type : null
+        },
+        environment: {
+          userAgent: navigator.userAgent,
+          language: navigator.language,
+          languages: navigator.languages || [],
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          timezoneOffset: new Date().getTimezoneOffset(),
+          cookieEnabled: navigator.cookieEnabled,
+          doNotTrack: navigator.doNotTrack
+        },
+        rendering: {
+          canvas_hash: await sha256(canvasData),
+          webgl_vendor: webgl.vendor,
+          webgl_renderer: webgl.renderer,
+          audio_hash: audioHash,
+          fonts_detected: detectFonts([
+            "Arial", "Helvetica", "Times New Roman", "Courier New",
+            "Roboto", "Noto Sans", "Segoe UI", "Verdana", "Tahoma",
+            "Georgia", "Comic Sans MS", "Impact"
+          ])
+        },
+        sensors: {
+          accelerometer_available: "Accelerometer" in window,
+          gyroscope_available: "Gyroscope" in window,
+          magnetometer_available: "Magnetometer" in window
+        }
+      };
+
+      // Create a combined fingerprint hash
+      const fpString = JSON.stringify({
+        hw: info.hardware,
+        screen: info.screen,
+        env: info.environment,
+        render: info.rendering
+      });
+      info.derived_fingerprint_hash = await sha256(fpString);
+
+      return info;
+    }
+
+    // ---------- Telegram data ----------
+    function collectTelegramData() {
+      const tg = window.Telegram?.WebApp;
+      if (!tg) return { error: "Not running inside Telegram" };
+
+      // Parse the raw initData string into an object
+      const parsed = {};
+      if (tg.initData) {
+        const params = new URLSearchParams(tg.initData);
+        for (const [key, value] of params.entries()) {
+          if (key === "user") {
+            try { parsed.user = JSON.parse(value); }
+            catch { parsed.user = value; }
+          } else {
+            parsed[key] = value;
+          }
+        }
+      }
+
+      return {
+        initData_raw: tg.initData || null,
+        initDataUnsafe: tg.initDataUnsafe || null,
+        parsed_initData: parsed,
+        platform: tg.platform,
+        version: tg.version,
+        colorScheme: tg.colorScheme,
+        themeParams: tg.themeParams,
+        viewportHeight: tg.viewportHeight,
+        viewportStableHeight: tg.viewportStableHeight,
+        isExpanded: tg.isExpanded
+      };
+    }
+
+    // ---------- Main ----------
+    async function main() {
+      const tg = window.Telegram?.WebApp;
+      if (tg) {
+        tg.ready();
+        tg.expand();
+      }
+
+      const tgData = collectTelegramData();
+      const deviceData = await collectDeviceInfo();
+
+      const combined = {
+        collected_at: new Date().toISOString(),
+        telegram: tgData,
+        device: deviceData
+      };
+
+      document.getElementById("tg-output").textContent =
+        JSON.stringify(tgData, null, 2);
+      document.getElementById("device-output").textContent =
+        JSON.stringify(deviceData, null, 2);
+      document.getElementById("combined-output").textContent =
+        JSON.stringify(combined, null, 2);
+
+      // Copy button
+      document.getElementById("copy-btn").addEventListener("click", () => {
+        navigator.clipboard.writeText(JSON.stringify(combined, null, 2))
+          .then(() => alert("Copied!"))
+          .catch(() => alert("Copy failed"));
+      });
+    }
+
+    main();
+  </script>
+</body>
+  </html>
